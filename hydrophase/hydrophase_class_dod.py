@@ -512,7 +512,19 @@ def process_file(file, season, output_dir, dod_file, mapping, global_attrs):
     logging.info(f"Finished file: {file}")
     logging.info(f"Time taken: {file_end_time - file_start_time}")
 
-# %%
+
+
+# %% Doing Dask parallel proc
+@delayed
+def safe_process_file(file, season, output_dir, dod_file, mapping, global_attrs):
+    logging.info("running safe_process_file()")
+    try:
+        process_file(file, season, output_dir, dod_file, mapping, global_attrs)
+        return f"✔ {os.path.basename(file)}"
+    except Exception as e:
+        logging.error(f"❌ Failed to process file: {file}")
+        logging.error(str(e))
+        return f"✖ {os.path.basename(file)}"
 
 def main():
     start_time = datetime.now()
@@ -545,8 +557,8 @@ def main():
     files = sorted(glob.glob(os.path.join(indir, "*.nc")))
     output_dir = outdir
 
-    if not rerun:
-         files = unprocessed_files(files, output_dir)
+    #if not rerun:
+    #     files = unprocessed_files(files, output_dir)
 
     logging.info(f"Year: {year}, Month: {month}, Season: {season}")
     logging.info(f"Found {len(files)} unprocessed files.")
@@ -598,22 +610,38 @@ def main():
                                                    scalar_fill_dim='time')
         ds_dod.to_netcdf(dod_file_path)
 
-    for file in files:
-        process_file(
+    # Use Dask Delayed to process all files in parallel
+    delayed_tasks = [
+        safe_process_file(
             file=file,
             season=season,
             output_dir=output_dir,
             dod_file=dod_file_path,
             mapping=mapping,
             global_attrs=global_attrs
-        )
-
+        ) for file in files
+    ]
+    
+    results = compute(*delayed_tasks, scheduler='processes')  # Or 'threads' if CPU-bound
+    
+    for r in results:
+        logging.info(r)
+        
     end_time = datetime.now()
     logging.info(f"Script finished at {end_time}")
     logging.info(f"Total time taken: {end_time - start_time}")
 
 
-main()
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()  # safe on all OSes
+    main()
+
+
+
+
+
+
 
 
 

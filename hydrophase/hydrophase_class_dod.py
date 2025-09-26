@@ -526,61 +526,31 @@ def safe_process_file(file, season, output_dir, dod_file, mapping, global_attrs)
         logging.error(str(e))
         return f"✖ {os.path.basename(file)}"
 
-def main():
-    start_time = datetime.now()
-    logging.info(f"Script started at {start_time}")
-
-    # CLI argument parser
+def parse_args():
     parser = argparse.ArgumentParser(description="Process radar files using HydroPhase classification.")
+    parser.add_argument("--year", type=int, default=2023)
+    parser.add_argument("--month", type=int, default=5)
+    parser.add_argument("--season", type=str, default='summer', choices=['summer', 'winter'])
+    parser.add_argument("--indir", type=str, default='/Users/bhupendra/projects/sail/data/test/')
+    parser.add_argument("--outdir", type=str, default='/Users/bhupendra/projects/sail/temp')
+    parser.add_argument("--dod_file", type=str, default='/Users/bhupendra/projects/sail/data/dod_v1_xprecipradarhp.nc')
+    parser.add_argument("--rerun", action='store_true')
+    return parser.parse_args()
 
-    # Define CLI args with defaults based on your script
-    parser.add_argument("--year", type=int, default=2023, help="Year of the data (e.g., 2023)")
-    parser.add_argument("--month", type=int, default=5, help="Month of the data (e.g., 5)")
-    parser.add_argument("--season", type=str, default='summer', choices=['summer', 'winter'], help="CSU classification scheme to use (summer or winter)")
-    parser.add_argument("--indir", type=str, default='/Users/bhupendra/projects/sail/data/test/', help="Input directory where CMAC files are located")
-    parser.add_argument("--outdir", type=str, default='/Users/bhupendra/projects/sail/temp', help="Output directory where processed files will be saved")
-    parser.add_argument("--dod_file", type=str, default='/Users/bhupendra/projects/sail/data/dod_v1_xprecipradarhp.nc', help="Path to DOD NetCDF template file")
-    parser.add_argument("--rerun", action='store_true', help="If set, reprocess all files even if they were already processed.")
-
-    args = parser.parse_args()
-
-    # Unpack args
-    year = args.year
-    month = args.month
-    season = args.season
-    indir = args.indir
-    outdir = args.outdir
-    rerun = args.rerun
-    dod_file_path = args.dod_file
-
-    # Load files
+def get_files(indir, rerun, output_dir):
     files = sorted(glob.glob(os.path.join(indir, "*.nc")))
-    output_dir = outdir
+    return files if rerun else unprocessed_files(files, output_dir)
 
-    #if not rerun:
-    #     files = unprocessed_files(files, output_dir)
-
-    logging.info(f"Year: {year}, Month: {month}, Season: {season}")
-    logging.info(f"Found {len(files)} unprocessed files.")
-
-    if not files:
-        logging.info("No files to process. Exiting.")
-        return
-
-    # Create mapping and global attributes
+def get_metadata():
     mapping = {
         "hp_fhc": "hp_fhc",
         "hp_ssc": "hp_ssc",
         "corrected_reflectivity": "corrected_reflectivity",
         "lowest_height": "lowest_height",
-        "z": "z",
-        "x": "x",
-        "y": "y",
+        "z": "z", "x": "x", "y": "y",
         "time": "time",
-        "x_lon": "lon",
-        "y_lat": "lat"
+        "x_lon": "lon", "y_lat": "lat"
     }
-
     global_attrs = {
         "command_line": " ".join(sys.argv) if hasattr(sys, "argv") else "hp_processing.py",
         "process_version": PROCESS_VERSION,
@@ -601,16 +571,17 @@ def main():
         "source": SOURCE,
         "history": f"File creation time {datetime.utcnow().isoformat()}Z"
     }
+    return mapping, global_attrs
 
-    # Ensure DOD file exists, or create it
+def ensure_dod_exists(dod_file_path):
     if not os.path.exists(dod_file_path):
         ds_dod = act.io.arm.create_ds_from_arm_dod('xprecipradarhp.c1',  
-                                                   set_dims = {'time':0}, 
+                                                   set_dims={'time': 0}, 
                                                    version='1.0',
                                                    scalar_fill_dim='time')
         ds_dod.to_netcdf(dod_file_path)
 
-    # Use Dask Delayed to process all files in parallel
+def run_parallel_processing(files, season, output_dir, dod_file_path, mapping, global_attrs):
     delayed_tasks = [
         safe_process_file(
             file=file,
@@ -621,15 +592,43 @@ def main():
             global_attrs=global_attrs
         ) for file in files
     ]
-    
-    results = compute(*delayed_tasks, scheduler='processes')  # Or 'threads' if CPU-bound
-    
+    results = compute(*delayed_tasks, scheduler='processes')
+    return results
+
+def main():
+    start_time = datetime.now()
+    logging.info(f"Script started at {start_time}")
+
+    args = parse_args()
+
+    files = get_files(args.indir, args.rerun, args.outdir)
+
+    logging.info(f"Year: {args.year}, Month: {args.month}, Season: {args.season}")
+    logging.info(f"Found {len(files)} unprocessed files.")
+
+    if not files:
+        logging.info("No files to process. Exiting.")
+        return
+
+    mapping, global_attrs = get_metadata()
+    ensure_dod_exists(args.dod_file)
+
+    results = run_parallel_processing(
+        files=files,
+        season=args.season,
+        output_dir=args.outdir,
+        dod_file_path=args.dod_file,
+        mapping=mapping,
+        global_attrs=global_attrs
+    )
+
     for r in results:
         logging.info(r)
-        
+
     end_time = datetime.now()
     logging.info(f"Script finished at {end_time}")
     logging.info(f"Total time taken: {end_time - start_time}")
+
 
 
 if __name__ == "__main__":
